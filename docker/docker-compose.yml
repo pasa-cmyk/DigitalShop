@@ -1,0 +1,262 @@
+name: digital-shop
+
+x-app-base: &app-base
+  image: digital-shop:0.2
+  build:
+    context: ..
+    dockerfile: docker/Dockerfile
+  restart: unless-stopped
+  init: true
+  volumes:
+    - ../config.yaml:/app/config.yaml:ro
+    - bot_data:/app/data
+  networks:
+    - app
+  logging:
+    driver: "json-file"
+    options:
+      max-size: "15m"
+      max-file: "5"
+  security_opt:
+    - no-new-privileges:true
+
+services:
+  postgres:
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 3G
+    image: postgres:18.4-trixie
+    restart: unless-stopped
+    env_file:
+      - ./postgres/.env
+    volumes:
+      - postgres_data:/var/lib/postgresql/18/docker
+      - ./postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+    command: >
+      postgres -c config_file=/etc/postgresql/postgresql.conf
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-postgres} -d $${POSTGRES_DB:-postgres}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - app
+
+  redis:
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+    image: redis:8.8.0-trixie
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - app
+
+  traefik:
+    image: traefik:v3.7.5
+    container_name: traefik_proxy
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: '0.3'
+          memory: 512M
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik_letsencrypt:/letsencrypt
+      - ./traefik/dynamic.yml:/etc/traefik/dynamic.yml:ro
+    command:
+      - "--api.insecure=false"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+
+      - "--entrypoints.web.http.redirections.entryPoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entryPoint.scheme=https"
+
+      - "--certificatesresolvers.le.acme.tlschallenge=true"
+      - "--certificatesresolvers.le.acme.email=${SSL_EMAIL}"
+      - "--certificatesresolvers.le.acme.storage=/letsencrypt/acme.json"
+
+      - "--log.level=INFO"
+      - "--providers.file.filename=/etc/traefik/dynamic.yml"
+      - "--providers.file.watch=true"
+    networks:
+      - app
+    profiles:
+      - webhook
+      - payment
+
+  taskiq-worker-priority:
+    !!merge <<: *app-base
+    command: taskiq worker src.app.main.taskiq.priority_broker:priority_broker --workers ${TASKIQ_PRIORITY_WORKERS}
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1024M
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrations:
+        condition: service_completed_successfully
+
+  taskiq-worker:
+    !!merge <<: *app-base
+    command: taskiq worker src.app.main.taskiq.broker:broker --workers ${TASKIQ_BROKER_WORKERS}
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1024M
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrations:
+        condition: service_completed_successfully
+
+  taskiq-scheduler:
+    !!merge <<: *app-base
+    command: taskiq scheduler src.app.main.taskiq.scheduler:scheduler
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1024M
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrations:
+        condition: service_completed_successfully
+
+  payment-webhook:
+    !!merge <<: *app-base
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1024M
+    command: >
+      uvicorn src.app.main.payment:main
+      --factory
+      --host 0.0.0.0
+      --port 8080
+      --proxy-headers
+      --loop uvloop
+      --forwarded-allow-ips="172.16.0.0/12"
+      --workers ${PAYMENT_WEBHOOK_WORKERS}
+    profiles: [payment]
+    expose:
+      - "8080"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.payment.rule=Host(`payment.${DOMAIN_NAME}`)"
+      - "traefik.http.routers.payment.entrypoints=websecure"
+      - "traefik.http.routers.payment.tls.certresolver=le"
+      - "traefik.http.routers.payment.tls.options=modern@file"
+      - "traefik.http.routers.payment.middlewares=security-headers@file"
+      - "traefik.http.services.payment.loadbalancer.server.port=8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrations:
+        condition: service_completed_successfully
+
+  bot-polling:
+    !!merge <<: *app-base
+    profiles: [polling]
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1024M
+    command: python -m src.app.main.bot.polling
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrations:
+        condition: service_completed_successfully
+
+  bot-webhook:
+    !!merge <<: *app-base
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1024M
+    profiles: [webhook]
+    command: >
+      python -m uvicorn src.app.main.bot.webhook:main
+      --factory
+      --host 0.0.0.0
+      --port 8090
+      --workers ${BOT_WEBHOOK_WORKERS}
+      --loop uvloop
+      --proxy-headers
+      --forwarded-allow-ips="172.16.0.0/12"
+    expose:
+      - "8090"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.bot.rule=Host(`bot.${DOMAIN_NAME}`)"
+      - "traefik.http.routers.bot.entrypoints=websecure"
+      - "traefik.http.routers.bot.tls.certresolver=le"
+      - "traefik.http.routers.bot.tls.options=modern@file"
+      - "traefik.http.routers.bot.middlewares=security-headers@file,rate-limit@file,compress@file"
+      - "traefik.http.services.bot.loadbalancer.server.port=8090"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrations:
+        condition: service_completed_successfully
+
+  migrations:
+    !!merge <<: *app-base
+    command: alembic upgrade head
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  redis_data:
+  traefik_letsencrypt:
+  bot_data:
+
+networks:
+  app:
+    driver: bridge

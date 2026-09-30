@@ -1,0 +1,49 @@
+bot:
+  token: YOUR_BOT_TOKEN
+
+  super_admins:
+    - 123123 # Telegram ID
+
+  webhook:
+    base_url: https://example.com
+    secret: SUPER_SECRET_KEY
+    with_ip_filter: false # This option available only with reverse proxy
+
+file_storage:
+  base_path: ./data/files
+
+payment:
+  crypto_pay:
+    token: YOUR_CRYPTO_PAY_TOKEN
+    network: https://pay.crypt.bot
+
+postgres:
+  db: DigitalShopDB
+  host: postgres
+  port: 5432
+  username: postgres
+  password: 1234
+
+  driver: psycopg
+
+  sql_alchemy:
+    echo: false
+    hide_parameters: true
+    pool_pre_ping: true
+
+    max_overflow: 15
+    pool_size: 20
+
+redis:
+  db: 0
+  host: redis
+  port: 6379
+  password: null
+  username: null
+
+log:
+  # Logging settings | 10 - DEBUG; 20 - INFO; 30 - WARNING; 40 - ERROR; 50 - CRITICAL
+  prod: false
+  log_level: 20
+
+  use_async_queue: true
