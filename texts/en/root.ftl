@@ -1,4 +1,4 @@
-root = <b>🤖 Welcome to the digital goods shop!</b>
+root = <b>🤖 Welcome to the QUATTRO shop!</b>
     .buy-btn = 🛒 Buy
     .profile-btn = 👤 Profile
     .wallet-btn = { -wallet-emoji } Wallet
