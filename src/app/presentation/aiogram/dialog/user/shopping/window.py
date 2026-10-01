@@ -12,8 +12,10 @@ from aiogram_dialog.widgets.kbd import (
     SwitchTo,
 )
 from aiogram_dialog.widgets.media import DynamicMedia
+from aiogram_dialog.widgets.style import Style
 
 from aiogram import F
+from aiogram.enums import ButtonStyle
 from app.presentation.aiogram.dialog.error import on_integer_error
 from app.presentation.aiogram.state import ShoppingState
 from app.presentation.aiogram.widget import GetText, GetTextSelect, Pagination
@@ -87,6 +89,7 @@ position = Window(
         id="buy",
         on_click=on_buy,  # type: ignore[bad-argument-type]
         when=F["items_amount"] > 0,
+        style=Style(ButtonStyle.SUCCESS),
     ),
     SwitchTo(
         GetText("inl-ui.back"),
